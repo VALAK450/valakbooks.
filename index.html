@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VALAK Books — Tienda Oficial</title>
+  <meta name="description" content="Tienda oficial de VALAK: libros digitales de psicología oscura, mentalidad y dinero. Compra segura y descargas al instante." />
+  <meta name="theme-color" content="#0b0b0f" />
+  <meta property="og:title" content="VALAK Books — Tienda Oficial" />
+  <meta property="og:description" content="Libros digitales de psicología y mentalidad. Descarga inmediata." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://picsum.photos/1200/630" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' x='0.1em' font-size='90'%3E📕%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root{
+      --bg:#0b0b0f;--panel:#111219;--panel-2:#0e0f14;--text:#eef2ff;--muted:#a2a6b3;--brand:#b517ff;--brand-2:#6a00f4;--ok:#10b981;--warning:#f59e0b;--danger:#ef4444;--card:#151726;--outline:#24263a;
+      --shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.02);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:radial-gradient(1200px 600px at 70% -10%, rgba(181,23,255,.08), transparent 60%),
+                                   radial-gradient(900px 500px at -10% 20%, rgba(106,0,244,.08), transparent 60%),
+                                   var(--bg);color:var(--text);font:16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial}
+    a{color:inherit;text-decoration:none}
+    .wrap{max-width:1200px;margin:auto;padding:24px}
+    /* header */
+    header{position:sticky;top:0;z-index:50;background:linear-gradient(180deg, rgba(11,11,15,.85), rgba(11,11,15,.65));backdrop-filter:saturate(1.2) blur(8px);border-bottom:1px solid var(--outline)}
+    .nav{display:flex;align-items:center;gap:16px}
+    .logo{display:flex;align-items:center;gap:10px}
+    .logo-badge{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--brand-2));display:grid;place-items:center;box-shadow:var(--shadow)}
+    .logo-badge b{font-size:18px}
+    .brand{font-weight:700;letter-spacing:.3px}
+    .spacer{flex:1}
+    .btn,button{appearance:none;border:0;cursor:pointer;color:var(--text);background:linear-gradient(135deg,var(--brand),var(--brand-2));padding:10px 14px;border-radius:12px;box-shadow:var(--shadow);font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid var(--outline)}
+    .btn.icon{display:flex;align-items:center;gap:10px}
+    .icon-24{width:24px;height:24px;display:inline-grid;place-items:center}
+    /* hero */
+    .hero{display:grid;grid-template-columns:1.1fr .9fr;gap:26px;align-items:center;padding:36px 0}
+    .hero h1{font-size:42px;line-height:1.1;margin:0 0 10px}
+    .hero p{color:var(--muted);margin:0 0 16px}
+    .hero .panel{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--outline);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
+    .hero img{width:100%;border-radius:18px;border:1px solid var(--outline);box-shadow:var(--shadow)}
+    .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+    .chip{border:1px solid var(--outline);padding:6px 10px;border-radius:999px;color:var(--muted)}
+    /* grid */
+    h2.section{margin:28px 0 10px;font-size:22px;color:#cbd5ff}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.0)),var(--card);border:1px solid var(--outline);border-radius:18px;padding:14px;box-shadow:var(--shadow);display:flex;flex-direction:column}
+    .card .thumb{aspect-ratio:16/10;border-radius:12px;background:#0f1020 url('https://picsum.photos/seed/book/600/400') center/cover;border:1px solid var(--outline);box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}
+    .card h3{margin:12px 0 4px}
+    .price{display:flex;align-items:center;gap:10px}
+    .price b{font-size:18px}
+    .price s{color:var(--muted);font-weight:400}
+    .meta{color:var(--muted);font-size:14px}
+    .grow{flex:1}
+    .actions{display:flex;gap:8px;margin-top:12px}
+    .qty{display:flex;border:1px solid var(--outline);border-radius:12px;overflow:hidden}
+    .qty button{background:transparent;border:0;padding:8px 10px}
+    .qty input{width:42px;text-align:center;background:transparent;color:var(--text);border:0;outline:none}
+    /* cart */
+    .drawer{position:fixed;inset:0 0 0 auto;display:none}
+    .drawer.open{display:block}
+    .drawer .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5)}
+    .drawer .panel{position:absolute;right:0;top:0;bottom:0;width:420px;max-width:100%;background:var(--panel);border-left:1px solid var(--outline);box-shadow:var(--shadow);display:flex;flex-direction:column}
+    .drawer .head{display:flex;align-items:center;gap:10px;padding:16px;border-bottom:1px solid var(--outline)}
+    .drawer .items{padding:12px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px}
+    .drawer .item{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:center;border:1px solid var(--outline);border-radius:12px;padding:8px;background:var(--card)}
+    .drawer .item img{width:64px;height:64px;border-radius:8px;border:1px solid var(--outline);object-fit:cover}
+    .drawer .foot{border-top:1px solid var(--outline);padding:12px;display:grid;gap:10px}
+    .row{display:flex;justify-content:space-between;color:var(--muted)}
+    .total{font-size:18px}
+    .coupon{display:flex;gap:8px}
+    .coupon input{flex:1;border:1px solid var(--outline);border-radius:10px;background:transparent;color:var(--text);padding:10px}
+    /* sections */
+    .features{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
+    .feature{border:1px solid var(--outline);border-radius:16px;padding:16px;background:var(--panel)}
+    .faq details{border:1px solid var(--outline);border-radius:14px;padding:12px;background:var(--panel);margin-bottom:10px}
+    .badge{font-size:12px;color:#a5f3fc;border:1px solid #1f2937;padding:3px 8px;border-radius:999px}
+    footer{margin-top:40px;border-top:1px solid var(--outline);background:linear-gradient(180deg,transparent,rgba(255,255,255,.02));}
+    footer .footgrid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:16px;padding:22px 0}
+    footer a:hover{text-decoration:underline}
+    /* responsive */
+    @media (max-width: 980px){.hero{grid-template-columns:1fr}.grid,.features{grid-template-columns:1fr 1fr}}
+    @media (max-width: 640px){.grid,.features, footer .footgrid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap nav">
+      <div class="logo">
+        <div class="logo-badge"><b>V</b></div>
+        <div>
+          <div class="brand">VALAK Books</div>
+          <div class="badge">Descarga inmediata · MXN</div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn icon" id="openCart" aria-label="Abrir carrito">
+        <span class="icon-24">🛒</span>
+        <span id="cartCount">0</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- HERO -->
+    <section class="hero" id="inicio">
+      <div class="panel">
+        <h1>Libros de psicología, mentalidad y dinero — estilo <span style="background:linear-gradient(90deg,var(--brand),var(--brand-2));-webkit-background-clip:text;background-clip:text;color:transparent">VALAK</span></h1>
+        <p>Contenido directo y sin filtros. Compra segura en pesos mexicanos y recibe tu descarga al instante (PDF/EPUB). Ideal para lectores que quieren implementar hoy.</p>
+        <div class="chips">
+          <span class="chip">⚡ Descarga inmediata</span>
+          <span class="chip">🔒 Pago seguro</span>
+          <span class="chip">♾️ Actualizaciones gratis</span>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <a href="#libros" class="btn">Ver libros</a>
+          <a href="#faq" class="btn ghost">Preguntas frecuentes</a>
+        </div>
+      </div>
+      <img src="https://picsum.photos/seed/valakbooks/900/700" alt="Portadas VALAK" loading="lazy"/>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="features">
+      <div class="feature"><h3>🔐 Compras protegidas</h3><p class="meta">Integra fácilmente Stripe, PayPal o Mercado Pago más adelante. Este demo usa carrito local y comprobante manual.</p></div>
+      <div class="feature"><h3>⚙️ 100% editable</h3><p class="meta">Todo en un archivo: HTML + CSS + JS. Cambia colores, precios, portadas y textos.</p></div>
+      <div class="feature"><h3>📩 Entrega por enlace</h3><p class="meta">Tras el pago, envías un link de descarga o automatizas con tu backend cuando estés listo.</p></div>
+    </section>
+
+    <!-- CATÁLOGO -->
+    <h2 id="libros" class="section">Catálogo</h2>
+    <section class="grid" id="catalog">
+      <!-- Cada card tiene data-id y data-price para el JS -->
+      <article class="card" data-id="psico01" data-title="El Oráculo Mental" data-price="199" data-file="/descargas/oraculo-mental.pdf">
+        <div class="thumb" style="background-image:url('https://picsum.photos/seed/oraculo/600/400')"></div>
+        <h3>El Oráculo Mental</h3>
+        <div class="meta">Según la psicología: tácticas prácticas para entender y dirigir comportamientos.</div>
+        <div class="price"><b>$199 MXN</b> <s>$249</s></div>
+        <div class="grow"></div>
+        <div class="actions">
+          <div class="qty" data-qty>
+            <button aria-label="menos">−</button>
+            <input type="number" min="1" value="1" aria-label="cantidad">
+            <button aria-label="más">+</button>
+          </div>
+          <button class="btn" data-add>Añadir</button>
+        </div>
+      </article>
+
+      <article class="card" data-id="poder02" data-title="El Origen Oscuro" data-price="249" data-file="/descargas/origen-oscuro.pdf">
+        <div class="thumb" style="background-image:url('https://picsum.photos/seed/origen/600/400')"></div>
+        <h3>El Origen Oscuro</h3>
+        <div class="meta">Dominio personal, narrativa propia y sesgos cognitivos para liderar.</div>
+        <div class="price"><b>$249 MXN</b> <s>$299</s></div>
+        <div class="grow"></div>
+        <div class="actions">
+          <div class="qty" data-qty>
+            <button aria-label="menos">−</button>
+            <input type="number" min="1" value="1" aria-label="cantidad">
+            <button aria-label="más">+</button>
+          </div>
+          <button class="btn" data-add>Añadir</button>
+        </div>
+      </article>
+
+      <article class="card" data-id="dinero03" data-title="Mente sin Filtro" data-price="149" data-file="/descargas/mente-sin-filtro.pdf">
+        <div class="thumb" style="background-image:url('https://picsum.photos/seed/filtro/600/400')"></div>
+        <h3>Mente sin Filtro</h3>
+        <div class="meta">Dinero, hábitos y estrategia con enfoque realista y aplicable hoy.</div>
+        <div class="price"><b>$149 MXN</b> <s>$199</s></div>
+        <div class="grow"></div>
+        <div class="actions">
+          <div class="qty" data-qty>
+            <button aria-label="menos">−</button>
+            <input type="number" min="1" value="1" aria-label="cantidad">
+            <button aria-label="más">+</button>
+          </div>
+          <button class="btn" data-add>Añadir</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- FAQ -->
+    <h2 id="faq" class="section">Preguntas frecuentes</h2>
+    <section class="faq">
+      <details><summary>¿Cómo recibo mi libro?</summary><p class="meta">Tras confirmar pago, recibirás un enlace de descarga (PDF/EPUB). Puedes automatizar esto más adelante.</p></details>
+      <details><summary>¿Qué métodos de pago aceptan?</summary><p class="meta">Por ahora es demostración. Cuando conectes Stripe / PayPal / Mercado Pago, el pago será inmediato.</p></details>
+      <details><summary>¿Hay reembolsos?</summary><p class="meta">Garantía de 7 días si no quedas satisfecho. Escríbenos por WhatsApp con tu número de pedido.</p></details>
+    </section>
+  </main>
+
+  <!-- CART DRAWER -->
+  <aside class="drawer" id="drawer">
+    <div class="backdrop" data-close></div>
+    <div class="panel">
+      <div class="head">
+        <button class="btn ghost" data-close>← Seguir comprando</button>
+        <div class="spacer"></div>
+        <strong>Tu carrito</strong>
+      </div>
+      <div class="items" id="cartItems"></div>
+      <div class="foot">
+        <div class="coupon">
+          <input id="coupon" placeholder="Cupón (VALAK10, DARK20)" />
+          <button class="btn ghost" id="applyCoupon">Aplicar</button>
+        </div>
+        <div class="row"><span>Subtotal</span><span id="subtotal">$0</span></div>
+        <div class="row"><span>Descuento</span><span id="discount">− $0</span></div>
+        <div class="row"><span>Envío</span><span>Digital · $0</span></div>
+        <div class="row total"><strong>Total</strong><strong id="total">$0</strong></div>
+        <button class="btn" id="checkout">Proceder al pago</button>
+        <button class="btn ghost" id="clearCart">Vaciar carrito</button>
+        <p class="meta">Demo: el pago abre un resumen y genera un <em>número de pedido</em>. Luego puedes conectar Stripe/Mercado Pago.</p>
+      </div>
+    </div>
+  </aside>
+
+  <footer>
+    <div class="wrap footgrid">
+      <div>
+        <div class="brand">VALAK Books</div>
+        <p class="meta">© <span id="year"></span> VALAK. Todos los derechos reservados.</p>
+        <p class="meta">Soporte: <a href="https://wa.me/5212722826567" target="_blank" rel="noopener">WhatsApp</a> · <a href="mailto:ventas@valakbooks.com">ventas@valakbooks.com</a></p>
+      </div>
+      <div>
+        <h4>Atajos</h4>
+        <p><a href="#inicio">Inicio</a></p>
+        <p><a href="#libros">Catálogo</a></p>
+        <p><a href="#faq">FAQ</a></p>
+      </div>
+      <div>
+        <h4>Legal</h4>
+        <p><a href="#">Términos</a></p>
+        <p><a href="#">Privacidad</a></p>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Utilidades
+    const MXN = n => new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).format(n);
+    const $ = s => document.querySelector(s);
+    const $$ = s => [...document.querySelectorAll(s)];
+
+    // Estado
+    let cart = JSON.parse(localStorage.getItem('valak_cart')||'[]');
+    let coupon = localStorage.getItem('valak_coupon')||'';
+
+    const save = ()=>{
+      localStorage.setItem('valak_cart', JSON.stringify(cart));
+      localStorage.setItem('valak_coupon', coupon||'');
+    }
+
+    // Cantidad control en cards
+    $$('#catalog [data-qty]').forEach(box=>{
+      const input = box.querySelector('input');
+      box.querySelectorAll('button')[0].addEventListener('click',()=>{
+        input.value = Math.max(1, parseInt(input.value||1)-1);
+      });
+      box.querySelectorAll('button')[1].addEventListener('click',()=>{
+        input.value = parseInt(input.value||1)+1;
+      });
+    });
+
+    // Añadir al carrito
+    $$('#catalog [data-add]').forEach(btn=>{
+      btn.addEventListener('click', e=>{
+        const card = e.target.closest('.card');
+        const id = card.dataset.id;
+        const title = card.dataset.title;
+        const price = parseFloat(card.dataset.price);
+        const qty = parseInt(card.querySelector('[data-qty] input').value||1);
+        const file = card.dataset.file;
+        const existing = cart.find(i=>i.id===id);
+        if(existing){ existing.qty += qty; } else { cart.push({id,title,price,qty,file}); }
+        save();
+        renderCart();
+        openDrawer();
+      })
+    });
+
+    // Drawer
+    const drawer = $('#drawer');
+    const openDrawer = ()=> drawer.classList.add('open');
+    const closeDrawer = ()=> drawer.classList.remove('open');
+    $('#openCart').addEventListener('click', openDrawer);
+    drawer.addEventListener('click', e=>{ if(e.target.matches('[data-close], .backdrop')) closeDrawer(); })
+
+    // Render carrito
+    function calcTotals(){
+      const subtotal = cart.reduce((a,b)=>a + b.price*b.qty, 0);
+      let discount = 0;
+      const code = (coupon||'').trim().toUpperCase();
+      if(code==='VALAK10') discount = subtotal*0.10;
+      if(code==='DARK20' && cart.reduce((a,b)=>a+b.qty,0) >= 2) discount = subtotal*0.20;
+      const total = Math.max(0, subtotal - discount);
+      return {subtotal, discount, total};
+    }
+
+    function renderCart(){
+      const items = $('#cartItems');
+      items.innerHTML = '';
+      cart.forEach((p,idx)=>{
+        const el = document.createElement('div');
+        el.className = 'item';
+        el.innerHTML = `
+          <img src="https://picsum.photos/seed/${p.id}/200/200" alt="${p.title}"/>
+          <div>
+            <div style="font-weight:600">${p.title}</div>
+            <div class="meta">${MXN(p.price)} · Cantidad: 
+              <button data-minus data-i="${idx}" title="-">−</button>
+              <span style="padding:0 6px">${p.qty}</span>
+              <button data-plus data-i="${idx}" title="+">+</button>
+            </div>
+          </div>
+          <div style="text-align:right">
+            <div>${MXN(p.price*p.qty)}</div>
+            <button data-remove data-i="${idx}" class="btn ghost" style="margin-top:6px">Quitar</button>
+          </div>`;
+        items.appendChild(el);
+      });
+      const {subtotal,discount,total} = calcTotals();
+      $('#subtotal').textContent = MXN(subtotal);
+      $('#discount').textContent = discount? `− ${MXN(discount)}` : '− $0';
+      $('#total').textContent = MXN(total);
+      $('#cartCount').textContent = cart.reduce((a,b)=>a+b.qty,0);
+      $('#coupon').value = coupon;
+    }
+
+    // Eventos cart
+    $('#cartItems').addEventListener('click', e=>{
+      if(e.target.matches('[data-plus]')){ cart[e.target.dataset.i].qty++; save(); renderCart(); }
+      if(e.target.matches('[data-minus]')){ cart[e.target.dataset.i].qty = Math.max(1, cart[e.target.dataset.i].qty-1); save(); renderCart(); }
+      if(e.target.matches('[data-remove]')){ cart.splice(e.target.dataset.i,1); save(); renderCart(); }
+    });
+
+    $('#applyCoupon').addEventListener('click', ()=>{ coupon = $('#coupon').value.trim(); save(); renderCart(); });
+    $('#clearCart').addEventListener('click', ()=>{ cart = []; coupon = ''; save(); renderCart(); });
+
+    // Checkout simulado
+    function genOrderId(){ return 'V-'+Math.random().toString(36).slice(2,8).toUpperCase(); }
+
+    $('#checkout').addEventListener('click', ()=>{
+      if(!cart.length){ alert('Tu carrito está vacío.'); return; }
+      const {subtotal,discount,total} = calcTotals();
+      const id = genOrderId();
+      // Resumen
+      const lines = cart.map(p=>`• ${p.title} x${p.qty} — ${MXN(p.price*p.qty)}`).join('\n');
+      const msg = `Pedido ${id}\n\n${lines}\n\nSubtotal: ${MXN(subtotal)}\nDescuento: ${MXN(discount)}\nTotal: ${MXN(total)}\n\nEnvía comprobante por WhatsApp para recibir tu enlace de descarga inmediato.`;
+      // Enviar a WhatsApp con mensaje prellenado
+      const url = `https://wa.me/5212722826567?text=${encodeURIComponent(msg)}`;
+      window.open(url,'_blank');
+    });
+
+    // Inicial
+    renderCart();
+    $('#year').textContent = new Date().getFullYear();
+  </script>
+
+  <!-- JSON-LD BÁSICO (SEO) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "VALAK Books",
+    "url": "https://valakbooks.example",
+    "logo": "https://picsum.photos/seed/logo/200/200"
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    "itemListElement": [
+      {
+        "@type": "Product",
+        "name": "El Oráculo Mental",
+        "offers": {"@type":"Offer","priceCurrency":"MXN","price":"199","availability":"https://schema.org/InStock"}
+      },
+      {
+        "@type": "Product",
+        "name": "El Origen Oscuro",
+        "offers": {"@type":"Offer","priceCurrency":"MXN","price":"249","availability":"https://schema.org/InStock"}
+      },
+      {
+        "@type": "Product",
+        "name": "Mente sin Filtro",
+        "offers": {"@type":"Offer","priceCurrency":"MXN","price":"149","availability":"https://schema.org/InStock"}
+      }
+    ]
+  }
+  </script>
+</body>
+</html>
