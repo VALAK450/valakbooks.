@@ -1,0 +1,996 @@
+// VALAKBOT – WhatsApp Bot (listas FF + interna + scrim + admin + media + MULTILISTAS)
+// © VALAK — Requisitos: Node 18+, ffmpeg y yt-dlp en PATH
+
+const {
+  default: makeWASocket,
+  DisconnectReason,
+  useMultiFileAuthState,
+  jidNormalizedUser,
+  downloadContentFromMessage,
+} = require('@whiskeysockets/baileys');
+const P = require('pino');
+const qrcode = require('qrcode-terminal');
+let QRPNG = null; try { QRPNG = require('qrcode'); } catch {}
+const axios = require('axios');
+const yts = require('yt-search');
+const { spawn } = require('child_process');
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+
+// ====== BINARIOS (ajusta rutas si no usas PATH)
+const YTDLP  = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+const FFMPEG = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+
+// ===== Manejo de errores global
+process.on('uncaughtException', (err) => console.error('uncaughtException:', err?.stack || err));
+process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err?.stack || err));
+
+// ===== Config base
+const BOTNAME = 'VALAKBOT';
+const SIG = '> 𝑽𝑨𝑳𝑨𝑲𝑩𝑶𝑻';
+const LOG = P({ level: 'silent' });
+let BOT_ENABLED = true;
+
+const MENU_PIC_URL = 'https://i.postimg.cc/T2c9kJcW/IMG-20251007-WA0125.jpg';
+const TMP = path.join(process.cwd(), 'tmp');
+if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
+
+// ── Config persistente owner
+const OWNER_CFG_PATH = path.join(process.cwd(), 'owner.json');
+let OWNER_CFG = { jid: '', photo: '' };
+try {
+  if (fs.existsSync(OWNER_CFG_PATH)) {
+    OWNER_CFG = JSON.parse(fs.readFileSync(OWNER_CFG_PATH, 'utf8'));
+  }
+} catch { OWNER_CFG = { jid: '', photo: '' }; }
+const saveOwnerCfg = () => fs.writeFileSync(OWNER_CFG_PATH, JSON.stringify(OWNER_CFG, null, 2));
+const OWNER_FALLBACK = '529241798849@s.whatsapp.net';
+
+// ── Utils/JID
+const normalizeJid = (s = '') => {
+  s = String(s).trim();
+  if (!s) return '';
+  if (s.includes('@')) return s.replace(/@lid$/i, '@s.whatsapp.net');
+  const d = s.replace(/\D/g, '');
+  return d ? `${d}@s.whatsapp.net` : '';
+};
+const isOwner = (jid = '') => {
+  const me  = jidNormalizedUser(normalizeJid(jid));
+  const cfg = jidNormalizedUser(normalizeJid(OWNER_CFG?.jid || ''));
+  const fb  = jidNormalizedUser(normalizeJid(OWNER_FALLBACK));
+  return me === cfg || me === fb;
+};
+const tagFor = jid => '@' + (jid || '').split('@')[0];
+const uniq = a => [...new Set(a.filter(Boolean))];
+const same = (a,b)=> jidNormalizedUser(a||'')===jidNormalizedUser(b||'');
+const clean = s => (s||'').replace(/\u200d|\uFE0F/g,'').trim();
+const pickDigit = (s='') => (s.replace(/\D/g,'') || '').slice(-1);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const ensureDir = d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); };
+
+// ── Estado por chat
+const contacts = {};
+const boards = new Map(); // chat -> tablero (lista activa)
+const gcfg = new Map();   // chat -> config
+function ensureCfg(chat){
+  if(!gcfg.has(chat)) gcfg.set(chat,{
+    warns:new Map(), muted:new Map(), slowmodeSec:0, antispam:false, lastTimes:new Map(),
+    msgTimes:new Map(), banned:new Set(), lockmedia:false, antilink:'off', rules:'',
+    templates:{}, pins:[], recent:[], menuPic:'', nsfw:false
+  });
+  return gcfg.get(chat);
+}
+
+function headerN_valak() {
+  const dt = new Date();
+  const fmt = new Intl.DateTimeFormat('es-MX', {
+    day: '2-digit', month: 'long', year: 'numeric',
+    timeZone: 'America/Mexico_City'
+  }).formatToParts(dt);
+  const dd = fmt.find(p => p.type === 'day')?.value || '01';
+  let mm = fmt.find(p => p.type === 'month')?.value || 'enero';
+  const yyyy = fmt.find(p => p.type === 'year')?.value || String(dt.getFullYear());
+  mm = mm.charAt(0).toUpperCase() + mm.slice(1).toLowerCase();
+  return `> 𝑽𝑨𝑳𝑨𝑲𝑩𝑶𝑻  l ${dd} de ${mm} ${yyyy}`;
+}
+
+// ── Nombres
+function nameLocal(jid) {
+  const c = contacts[jid];
+  return c?.notify || c?.name || c?.verifiedName || jid.split('@')[0];
+}
+async function nameDisplay(sock, jid) {
+  try {
+    const local = nameLocal(jid);
+    if (local && !/^\d+$/.test(local)) return local;
+    const wa = await sock.onWhatsApp(jidNormalizedUser(jid));
+    return wa?.[0]?.notify || jid.split('@')[0];
+  } catch { return jid.split('@')[0]; }
+}
+
+// ── Descargas/Media
+async function streamToBuffer(stream) { const chunks=[]; for await (const c of stream) chunks.push(c); return Buffer.concat(chunks); }
+async function getProfilePic(sock, jid) {
+  try {
+    const url = await sock.profilePictureUrl(jid, 'image');
+    if (!url) return null;
+    const { data } = await axios.get(url, { responseType:'arraybuffer' });
+    return Buffer.from(data);
+  } catch { return null; }
+}
+const lastMedia = new Map();
+const lastYT = new Map();
+const prefetch = new Map();
+
+const YT = {
+  async audioFast(q) {
+    let target = (q||'').trim();
+    if (!/^https?:\/\//i.test(target)) {
+      const r = await yts(target); const v = r?.videos?.[0];
+      if (!v) throw new Error('Sin resultados'); target = v.url;
+    }
+    const out = path.join(TMP, `${Date.now()}-${Math.random().toString(36).slice(2)}.m4a`);
+    const args = ['-f', 'ba[ext=m4a]/bestaudio', '--no-playlist', '-o', out, target];
+    await new Promise((res, rej) => {
+      const p = spawn(YTDLP, args);
+      let e=''; p.stderr.on('data', d => e+=d);
+      p.on('close', c => c===0 ? res() : rej(new Error(e||`yt-dlp ${c}`)));
+      p.on('error', rej);
+    });
+    const buf = await fsp.readFile(out).finally(()=>fsp.unlink(out).catch(()=>{}));
+    return { buf, mimetype: 'audio/mp4' };
+  },
+  async video(q){
+    let target=(q||'').trim();
+    if (!/^https?:\/\//i.test(target)) {
+      const r=await yts(target); const v=r?.videos?.[0];
+      if(!v) throw new Error('Sin resultados'); target=v.url;
+    }
+    const out=path.join(TMP,`${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
+    const args=['-f','mp4','--no-playlist','-o',out,target];
+    await new Promise((res,rej)=>{
+      const p=spawn(YTDLP,args);
+      let e=''; p.stderr.on('data',d=>e+=d);
+      p.on('close',c=>c===0?res():rej(new Error(e||`yt-dlp ${c}`)));
+      p.on('error',rej);
+    });
+    const buf=await fsp.readFile(out).finally(()=>fsp.unlink(out).catch(()=>{}));
+    return buf;
+  }
+};
+
+// ── Sticker helpers
+async function imageToWebpBuf(buf){
+  const inPath  = path.join(TMP, `in-${Date.now()}.jpg`);
+  const outPath = path.join(TMP, `out-${Date.now()}.webp`);
+  await fsp.writeFile(inPath, buf);
+  await new Promise((res, rej) => {
+    const args = [
+      '-y','-i', inPath,
+      '-vf','scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000',
+      '-vcodec','libwebp','-lossless','1','-qscale','50','-preset','picture','-loop','0','-an','-vsync','0',
+      outPath
+    ];
+    const p = spawn(FFMPEG, args); let e='';
+    p.stderr.on('data', d=> e+=d);
+    p.on('close', c => c===0 ? res() : rej(new Error(e||'ffmpeg')));
+  });
+  const out = await fsp.readFile(outPath).finally(()=>{ fsp.unlink(inPath).catch(()=>{}); fsp.unlink(outPath).catch(()=>{}); });
+  return out;
+}
+async function videoToWebpBuf(buf){
+  const inPath  = path.join(TMP, `in-${Date.now()}.mp4`);
+  const outPath = path.join(TMP, `out-${Date.now()}.webp`);
+  await fsp.writeFile(inPath, buf);
+  await new Promise((res, rej) => {
+    const args = [
+      '-y','-i', inPath,
+      '-vf','scale=512:512:force_original_aspect_ratio=decrease,fps=15',
+      '-vcodec','libwebp','-lossless','0','-qscale','50','-preset','default','-an','-vsync','0',
+      outPath
+    ];
+    const p = spawn(FFMPEG, args); let e='';
+    p.stderr.on('data', d=> e+=d);
+    p.on('close', c => c===0 ? res() : rej(new Error(e||'ffmpeg')));
+  });
+  const out = await fsp.readFile(outPath).finally(()=>{ fsp.unlink(inPath).catch(()=>{}); fsp.unlink(outPath).catch(()=>{}); });
+  return out;
+}
+
+// ── Texto de tarjetas
+const ICONS = { fem:'🌸', masc:'🥷🏻', mixto:'🧔🏻‍♀️', wolf:'🐺' };
+const modeTitle = m => m==='fem'?'𝑭𝑬𝑴𝑬𝑵𝑰𝑵𝑶': m==='masc'?'𝑴𝑨𝑺𝑪𝑼𝑳𝑰𝑵𝑶':'𝑴𝑰𝑿𝑻𝑶';
+const line = (ico, jid, nick)=>`┇➥ ${ico} ➤ ${jid?(nick?.get?.(jid)||tagFor(jid)):''}`;
+
+function horario(hours){
+  return `╭──────────────╮
+ㅤㅤ ⏱ 𝐇𝐎𝐑𝐀𝐑𝐈𝐎  
+➤ 🇲🇽 𝑀𝐸𝑋 : ${hours.mex||''}
+➤ 🇨🇴 𝐶𝑂𝐿 : ${hours.col||''}
+`;
+}
+function parseHourToMXCOL(text){
+  const m=text.match(/(\d{1,2}):(\d{2})/);
+  if(!m) return {mex:'',col:''};
+  let h=parseInt(m[1],10), mm=m[2];
+  h=(h%24+24)%24;
+  const mex=`${String(h).padStart(2,'0')}:${mm}`;
+  const col=`${String((h+1)%24).padStart(2,'0')}:${mm}`;
+  return {mex,col};
+}
+
+// 4vs4 / 6vs6 normal
+function card46(kind, mode, players, subs, hours, caps, nick){
+  const ico = ICONS[mode] || ICONS.mixto;
+  const cap = caps?.p || (kind==='4vs4'?4:6), capSub = caps?.s || (kind==='4vs4'?2:3);
+  const header = `╭────────────╮
+ㅤㅤ  _*${kind==='4vs4'?'4 VERSUS 4':'6 VERSUS 6'}*_ 
+ㅤㅤㅤ${modeTitle(mode)}
+╰────────────╯`;
+  const lp = Array.from({length:cap},(_,i)=>line(ico,players[i],nick)).join('\n');
+  const ls = Array.from({length:capSub},(_,i)=>line(ico,subs[i],nick)).join('\n');
+  return `${header}
+
+${horario(hours)}┇➤ 𝐌𝐎𝐃𝐀𝐋𝐈𝐃𝐀𝐃: 
+┇➥ 𝗘𝗦𝗖𝐔𝐀𝐃𝐑𝐀:  
+${lp}
+
+┇➥ ʚ 𝐒𝐔𝐏𝐋𝐄𝐍𝐓𝐄:  
+${ls}
+╰─────────────╯
+
+*REACCIONA*
+✅ Jugador
+🪑 Suplente
+❌ Salir
+
+${SIG}`;
+}
+
+// 6vs6 VV2
+function card6vv2(mode, players, subs, hours, nick){
+  const ico = ICONS[mode] || ICONS.mixto;
+  const header = `╭────────────╮
+ㅤㅤ  _*6 VERSUS 6*_ 
+ㅤㅤㅤ${modeTitle(mode)}
+╰────────────╯`;
+  const lp = Array.from({length:6},(_,i)=>line(ico,players[i],nick)).join('\n');
+  const ls = Array.from({length:3},(_,i)=>line(ico,subs[i],nick)).join('\n');
+  return `${header}
+
+${horario(hours)}┇➤ 𝐌𝐎𝐃𝐀𝐋𝐈𝐃𝐀𝐃: *VV2*
+┇➥ 𝗘𝗦𝗖𝗨𝗔𝗗𝗥𝗔:  
+${lp}
+
+┇➥ ʚ 𝐒𝐔𝐏𝐋𝐄𝐍𝐓𝐄:  
+${ls}
+╰─────────────╯
+
+*REACCIONA*
+✅ Jugador
+🪑 Suplente
+❌ Salir
+
+${SIG}`;
+}
+
+// Multi-escuadras (8v8 / 12v12 / 16v16 / Hexagonal / Trilátero / Cuadrilátero)
+function cardMulti(title, squadsCount, squadSize, hours, squads, subs, nick){
+  const digits = ['1️⃣','2️⃣','3️⃣','4️⃣'];
+  const header = `╭────────────╮
+ㅤ  _*${title}*_ 
+╰────────────╯`;
+
+  const parts = [];
+  parts.push(header, '', horario(hours).trimEnd());
+
+  for (let i=0;i<squadsCount;i++){
+    const label = `𝗘𝗦𝗖𝗨𝗔𝗗𝗥𝗔 *${i+1}*:`;
+    const rows = Array.from({length:squadSize},(_,k)=>`┇➥ 📱 ➤ ${squads[i][k] ? (nick?.get?.(squads[i][k]) || tagFor(squads[i][k])) : ''}`).join('\n');
+    parts.push(`${label}  \n${rows}\n`);
+  }
+
+  const srows = Array.from({length: Math.max(3, Math.min(4, subs.length || 3))},(_,k)=>`┇➥ 📱 ➤ ${subs[k] ? (nick?.get?.(subs[k]) || tagFor(subs[k])) : ''}`).join('\n');
+
+  parts.push(`┇➥ ʚ 𝐒𝐔𝐏𝐋𝐄𝐍𝐓𝐄𝐒:  \n${srows}\n╰─────────────╯\n\n*REACCIONA*\n${digits.slice(0,squadsCount).join(' ')} Elegir escuadra\n🪑 Suplente\n❌ Salir\n\n${SIG}`);
+
+  return parts.join('\n');
+}
+
+// ── Envío del tablero
+async function sendBoard(sock, chat){
+  const b=boards.get(chat);
+  if(!b) return;
+
+  if (b.msgKey?.id){ try{ await sock.sendMessage(chat,{ delete:{...b.msgKey,fromMe:true} }); }catch{} }
+
+  let text, mentions=[];
+  if (b.kind==='4vs4' || b.kind==='6vs6'){
+    text = card46(b.kind, b.mode, b.players||[], b.subs||[], b.hours||{mex:'',col:''}, {p:b.capP,s:b.capS}, b.nick);
+    mentions = uniq([...(b.players||[]), ...(b.subs||[])]);
+  } else if (b.kind==='6vv2'){
+    text = card6vv2(b.mode, b.players||[], b.subs||[], b.hours||{mex:'',col:''}, b.nick);
+    mentions = uniq([...(b.players||[]), ...(b.subs||[])]);
+  } else if (b.kind==='multi'){
+    text = cardMulti(b.title, b.squadsCount, b.squadSize, b.hours||{mex:'',col:''}, b.squads, b.subs||[], b.nick);
+    mentions = uniq([...b.squads.flat(), ...(b.subs||[])]);
+  } else if (b.kind==='interna' || b.kind==='interna2'){ // si conservas internas/scrim
+    // puedes integrar si las usas; aquí omitidas para simplificar
+    text = '—';
+  } else {
+    text = '—';
+  }
+
+  const sent = await sock.sendMessage(chat,{ text, mentions: b.notify===false?[]:mentions });
+  b.msgKey = sent?.key || null;
+  boards.set(chat,b);
+}
+
+// ── Reacciones → inscripción
+async function handleReaction(chat, who, emoji, reactedId){
+  const b = boards.get(chat);
+  if (!b || !b.msgKey || b.msgKey.id !== reactedId) return;
+  if (b.blocked?.has?.(who)) return;
+  if (b.isOpen===false) return;
+
+  // 4vs4 / 6vs6 / 6vv2
+  if (b.kind==='4vs4' || b.kind==='6vs6' || b.kind==='6vv2'){
+    if (!/✅|✔️|☑️|🪑|❌|✖️/.test(emoji)) return;
+    const cap    = b.capP || (b.kind==='4vs4'?4:6);
+    const capSub = b.capS || (b.kind==='4vs4'?2:3);
+    b.players = (b.players||[]).filter(j=>!same(j,who));
+    b.subs    = (b.subs||[]).filter(j=>!same(j,who));
+    if (/✅|✔️|☑️/.test(emoji) && b.players.length<cap) b.players.push(who);
+    if (/🪑/.test(emoji) && b.subs.length<capSub) b.subs.push(who);
+    if (/❌|✖️/.test(emoji)) { /* ya salió por los filtros */ }
+    return void sendBoard(globalThis.sock, chat);
+  }
+
+  // MULTI-ESCUADRAS
+  if (b.kind==='multi'){
+    const d = pickDigit(emoji);
+    const valid = d && (parseInt(d,10) >= 1 && parseInt(d,10) <= b.squadsCount);
+    const asSub = /🪑/.test(emoji);
+    const leave = /❌|✖️/.test(emoji);
+
+    // limpiar
+    b.squads = b.squads.map(arr => arr.filter(j=>!same(j,who)));
+    b.subs   = (b.subs||[]).filter(j=>!same(j,who));
+
+    if (leave) return void sendBoard(globalThis.sock, chat);
+
+    if (asSub) {
+      if (b.subs.length < 8) b.subs.push(who);
+      return void sendBoard(globalThis.sock, chat);
+    }
+
+    if (valid) {
+      const idx = parseInt(d,10) - 1;
+      if (b.squads[idx].length < b.squadSize) b.squads[idx].push(who);
+      return void sendBoard(globalThis.sock, chat);
+    }
+  }
+}
+
+// ── MENÚ
+async function sendMenu(sock, chat) {
+  const caption = [
+    "𝘉𝘪𝘦𝘯𝘷𝘦𝘯𝘪𝘥@ 𝘢𝘭 𝘮𝘦𝘯𝘶 𝘱𝘳𝘪𝘯𝘤𝘪𝘱𝘢𝘭 𝘥𝘦 𝙑𝘈𝙇𝘈𝙆𝘽𝙊𝙏 𝘢𝘲𝘶𝘪 𝘦𝘯𝘤𝘰𝘯𝘵𝘳𝘢𝘳𝘢𝘴 𝘭𝘰𝘴 𝘤𝘰𝘮𝘢𝘯𝘥𝘰𝘀 𝘱𝘢𝘳𝘢 𝘮𝘢𝘯𝘵𝘦𝘯𝘦𝘳 𝘶𝘯 𝘣𝘶𝘦𝘯 𝘰𝘳𝘥𝘦𝘯 𝘦𝘯 𝘵𝘶 𝘨𝘳𝘶𝘱𝘰!",
+    "",
+    "*╭┈┈⊰* `𝗢𝗪𝗡𝗘𝗥`",
+    "*┊* 📌 *.owner*",
+    "*┊* 📌 *.setownerjid*",
+    "*┊* 📌 *.setownerpic*",
+    "*┊* 📌 *.backup*",
+    "*┊* 📌 *.enable*",
+    "*┊* 📌 *.disable*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `FREEFIRE`",
+    "*┊* 🎮 *.4vs4*",
+    "*┊* 🎮 *.6vs6*",
+    "*┊* 🎮 *.6vs6 vv2*",
+    "*┊* 🎮 *.8vs8*",
+    "*┊* 🎮 *.12vs12*",
+    "*┊* 🎮 *.16vs16*",
+    "*┊* 🎮 *.hexagonal*",
+    "*┊* 🎮 *.trilatero*",
+    "*┊* 🎮 *.cuadrilatero*",
+    "*┊* 🎮 *.interna*",
+    "*┊* 🎮 *.interna2*",
+    "*┊* 🎮 *.scrim*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗟𝗜𝗦𝗧𝗔𝗦`",
+    "*┊* 📋 *.limpiar*",
+    "*┊* 📋 *.reiniciar*",
+    "*┊* 📋 *.abrir*",
+    "*┊* 📋 *.cerrar*",
+    "*┊* 📋 *.cap*",
+    "*┊* 📋 *.sethora*",
+    "*┊* 📋 *.modo*",
+    "*┊* 📋 *.titulo*",
+    "*┊* 📋 *.ver*",
+    "*┊* 📋 *.add*",
+    "*┊* 📋 *.rm*",
+    "*┊* 📋 *.swap*",
+    "*┊* 📋 *.mover*",
+    "*┊* 📋 *.block*",
+    "*┊* 📋 *.unblock*",
+    "*┊* 📋 *.rename*",
+    "*┊* 📋 *.locksubs*",
+    "*┊* 📋 *.notif*",
+    "*┊* 📋 *.random*",
+    "*┊* 📋 *.guardar*",
+    "*┊* 📋 *.plantillas*",
+    "*┊* 📋 *.cargar*",
+    "*┊* 📋 *.export*",
+    "*┊* 📋 *.import*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗔𝗗𝗠𝗜𝗡`",
+    "*┊* 🌀 *.warn*",
+    "*┊* 🌀 *.warns*",
+    "*┊* 🌀 *.unwarn*",
+    "*┊* 🌀 *.mute*",
+    "*┊* 🌀 *.unmute*",
+    "*┊* 🌀 *.slowmode*",
+    "*┊* 🌀 *.antispam*",
+    "*┊* 🌀 *.banword*",
+    "*┊* 🌀 *.lockmedia*",
+    "*┊* 🌀 *.antilink*",
+    "*┊* 🌀 *.adms*",
+    "*┊* 🌀 *.rules*",
+    "*┊* 🌀 *.mentionadmins*",
+    "*┊* 🌀 *.revoke*",
+    "*┊* 🌀 *.link*",
+    "*┊* 🌀 *.invite*",
+    "*┊* 🌀 *.group open*",
+    "*┊* 🌀 *.group close*",
+    "*┊* 🌀 *.grupabrir*",
+    "*┊* 🌀 *.grupcerrar*",
+    "*┊* 🌀 *.promote*",
+    "*┊* 🌀 *.demote*",
+    "*┊* 🌀 *.kick*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗠𝗘𝗡𝗖𝗜𝗢𝗡𝗘𝗦`",
+    "*┊* ⚠️ *.todos*",
+    "*┊* ⚠️ *.n*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗝𝗨𝗘𝗚𝗢𝗦`",
+    "*┊* 🎮 *.topparejas*",
+    "*┊* 🎮 *.topgays*",
+    "*┊* 🎮 *.ruletaban*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗪𝗔𝗜𝗙𝗨𝗦`",
+    "*┊* 🍑 *.waifu*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗠𝗘𝗗𝗜𝗔`",
+    "*┊* 📱 *.play*",
+    "*┊* 📱 *.audio*",
+    "*┊* 📱 *.video*",
+    "*┊* 📱 *.s*",
+    "*┊* 📱 *.sticker*",
+    "*┊* 📱 *.toimg*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗨𝗧𝗜𝗟𝗜𝗗𝗔𝗗`",
+    "*┊* ✨ *.remind*",
+    "*┊* ✨ *.calc*",
+    "*┊* ✨ *.qr*",
+    "*┊* ✨ *.stats*",
+    "*┊* ✨ *.uptime*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗜𝗡𝗙𝗢`",
+    "*┊* 🖥️ *.id*",
+    "*┊* 🖥️ *.whois*",
+    "*┊* 🖥️ *.avatar*",
+    "*┊* 🖥️ *.groupinfo*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "",
+    "*╭┈┈⊰* `𝗔𝗡𝗜𝗠𝗘 (SFW)` ",
+    "*┊* 🍙 *.anime*",
+    "*┊* 🍙 *.waifu*",
+    "*┊* 🍙 *.neko*",
+    "*┊* 🍙 *.maid*",
+    "*┊* 🍙 *.megumin*",
+    "*┊* 🍙 *.shinobu*",
+    "*╰┈┈┈┈┈┈┈┈┈⊰*",
+    "> 𝑽𝑨𝑳𝑨𝑲𝑩𝑶𝑻"
+  ].join("\n");
+
+  const cfg = ensureCfg(chat);
+  const pic = cfg.menuPic || MENU_PIC_URL;
+
+  try {
+    await sock.sendMessage(chat, { image: { url: pic }, caption });
+  } catch { await sock.sendMessage(chat, { text: caption }); }
+}
+
+// ── Core
+async function start(){
+  const { state, saveCreds } = await useMultiFileAuthState('./session');
+  const sock = makeWASocket({ printQRInTerminal:false, auth:state, logger:LOG, browser:[BOTNAME,'Chrome','1.0'] });
+  globalThis.sock = sock;
+
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) qrcode.generate(qr, { small:true });
+    if (connection==='close') {
+      const should = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (should) start();
+    }
+  });
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('contacts.upsert', arr => arr.forEach(c => contacts[c.id] = { ...(contacts[c.id]||{}), ...c }));
+  sock.ev.on('contacts.update', arr => arr.forEach(c => contacts[c.id] = { ...(contacts[c.id]||{}), ...c }));
+
+  // Guardar último media del chat (para .s sin responder)
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const m = messages?.[0]; if (!m) return;
+    const chat = m.key.remoteJid;
+    const im = m.message?.imageMessage;
+    const vi = m.message?.videoMessage;
+    if (im || vi) lastMedia.set(chat, { type: im ? 'image' : 'video', message: m });
+  });
+
+  // Reacciones
+  sock.ev.on('messages.update', async (updates) => {
+    for (const u of updates) {
+      const react = u.update?.reactionMessage;
+      if (!react) continue;
+      const chat = u.key.remoteJid;
+      const actor = u.key.participant || u.key.remoteJid;
+      const emoji = clean(react.text||'');
+      const reactedId = react.key?.id || u.key?.id;
+      await handleReaction(chat, actor, emoji, reactedId);
+    }
+  });
+
+  // Mensajes / comandos
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const m = messages?.[0]; if (!m) return;
+
+    const chat = m.key.remoteJid;
+    const isGroup = chat?.endsWith('@g.us');
+    const senderJid = m.key.participant || m.key.remoteJid;
+    const cfg = ensureCfg(chat);
+
+    // track recientes para .random
+    if (isGroup){
+      cfg.recent.push(senderJid);
+      if (cfg.recent.length>60) cfg.recent.shift();
+    }
+
+    // si también nos llega reacción por aquí
+    const r = m.message?.reactionMessage;
+    if (r) {
+      const actor = m.key.participant || m.key.remoteJid;
+      const emoji = clean(r.text||'');
+      const reactedId = r.key?.id || m.key?.id;
+      await handleReaction(chat, actor, emoji, reactedId);
+      return;
+    }
+
+    const rawBody =
+      m.message?.conversation ||
+      m.message?.extendedTextMessage?.text ||
+      m.message?.imageMessage?.caption ||
+      m.message?.videoMessage?.caption ||
+      '';
+
+    // Moderación sencilla (antilink/banword/lockmedia/slowmode/antispam/mute)
+    if (isGroup) {
+      try {
+        const meta = await sock.groupMetadata(chat);
+        const isAdmin = !!meta.participants.find(p=> same(p.id, senderJid) && (p.admin==='admin'||p.admin==='superadmin'));
+        const botIsAdmin = !!meta.participants.find(p=> same(p.id, sock.user.id) && (p.admin==='admin'||p.admin==='superadmin'));
+
+        if (cfg.lockmedia && botIsAdmin && !isAdmin){
+          if (m.message?.imageMessage || m.message?.videoMessage || m.message?.stickerMessage || m.message?.audioMessage){
+            await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+          }
+        }
+        if (/(https?:\/\/)?chat\.whatsapp\.com\//i.test(rawBody)){
+          if (cfg.antilink==='strict' && botIsAdmin && !isAdmin){
+            await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+          } else if (cfg.antilink==='soft' && !isAdmin){
+            await sock.sendMessage(chat,{text:'🛡️ Evita compartir links de grupos.'});
+          }
+        }
+        for (const w of cfg.banned){
+          if (w && rawBody.toLowerCase().includes(w.toLowerCase())){
+            if (botIsAdmin) await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+            break;
+          }
+        }
+
+        // mute HARD
+        const normalizedSender = jidNormalizedUser(senderJid || '');
+        const mUntil = cfg.muted.get(normalizedSender) || 0;
+        if (mUntil && Date.now() < mUntil) {
+          if (botIsAdmin) await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+          return;
+        } else if (mUntil && Date.now() >= mUntil){
+          cfg.muted.delete(normalizedSender);
+        }
+
+        if (cfg.slowmodeSec>0 && !isAdmin){
+          const last = cfg.lastTimes.get(senderJid)||0;
+          if (Date.now() - last < cfg.slowmodeSec*1000){
+            if (botIsAdmin) await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+            return;
+          }
+          cfg.lastTimes.set(senderJid, Date.now());
+        }
+
+        if (cfg.antispam && !isAdmin && botIsAdmin){
+          const buf = cfg.msgTimes.get(senderJid)||[];
+          const t=Date.now();
+          const buf2 = buf.filter(x=> t-x < 7000); buf2.push(t);
+          cfg.msgTimes.set(senderJid, buf2);
+          if (buf2.length>=6){
+            await sock.sendMessage(chat, { delete: { remoteJid:chat, id:m.key.id, participant:senderJid } });
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    const body = rawBody;
+    const isCmd = body.startsWith('.');
+    if (!isCmd) return;
+
+    const [raw, ...rest] = body.slice(1).trim().split(/\s+/);
+    let cmd = (raw||'').toLowerCase();
+    const arg = rest.join(' ').trim();
+
+    // SOLO admin en grupos, excepto OWNER
+    if (isGroup) {
+      try {
+        const meta = await sock.groupMetadata(chat);
+        const senderIsAdmin = !!meta.participants.find(
+          p => same(p.id, senderJid) && (p.admin === 'admin' || p.admin === 'superadmin')
+        );
+        if (!senderIsAdmin && !isOwner(senderJid)) return;
+      } catch {
+        if (!isOwner(senderJid)) return;
+      }
+    }
+
+    if (!BOT_ENABLED && !['enable','menu','id'].includes(cmd)) return;
+
+    // ===== BÁSICOS
+    if (cmd==='menu') return void sendMenu(sock, chat);
+
+    if (cmd === 'enable') {
+      if (!isOwner(senderJid)) return void sock.sendMessage(chat,{text:'❌ Solo el OWNER puede usar *.enable*'});
+      BOT_ENABLED = true;
+      return void sock.sendMessage(chat,{text:'✅ Bot activado.'});
+    }
+    if (cmd === 'disable') {
+      if (!isOwner(senderJid)) return void sock.sendMessage(chat,{text:'❌ Solo el OWNER puede usar *.disable*'});
+      BOT_ENABLED = false;
+      return void sock.sendMessage(chat,{text:'🛑 Bot desactivado.'});
+    }
+
+    if (cmd === 'owner'){
+      const waid = OWNER_CFG.jid ? OWNER_CFG.jid.replace('@s.whatsapp.net','') : '529241798849';
+      const vcard=`BEGIN:VCARD
+VERSION:3.0
+FN:VALAK
+TEL;type=CELL;type=VOICE;waid=${waid}:+${waid}
+END:VCARD`;
+      return void sock.sendMessage(chat,{contacts:{displayName:'Owner',contacts:[{vcard}]}}); }
+
+    if (cmd === 'id') {
+      const me  = m.pushName || await nameDisplay(sock, senderJid);
+      const jid = jidNormalizedUser(senderJid);
+      return void sock.sendMessage(chat, { text: `🪪 ${me}\n${jid}` });
+    }
+
+    // ==== OWNER tools
+    if (cmd === 'setownerjid') {
+      const caller = jidNormalizedUser(normalizeJid(senderJid));
+      const hasOwner = !!(OWNER_CFG?.jid);
+      if (hasOwner && !isOwner(caller)) {
+        return void sock.sendMessage(chat, { text: '❌ Solo el OWNER puede usar *.setownerjid*' });
+      }
+      const mentioned = (m?.message?.extendedTextMessage?.contextInfo?.mentionedJid || [])[0];
+      const input  = arg || mentioned || (!hasOwner ? caller : '');
+      const newJid = normalizeJid(input);
+      if (!newJid) return void sock.sendMessage(chat, { text: 'Usa: *.setownerjid* <número|@mención|jid>' });
+      OWNER_CFG.jid = newJid; saveOwnerCfg();
+      return void sock.sendMessage(chat, { text: `✅ OWNER guardado:\n${OWNER_CFG.jid}` });
+    }
+
+    // ===== antilink/lockmedia/banword/slowmode/etc (igual que antes)
+    if (cmd==='antilink'){
+      const s=(arg||'').toLowerCase();
+      if(!['on','off','soft','strict'].includes(s)) return void sock.sendMessage(chat,{text:'Usa: .antilink soft|strict|off'});
+      if (s==='on') cfg.antilink='soft'; else if (s==='off') cfg.antilink='off'; else cfg.antilink=s;
+      return void sock.sendMessage(chat,{text:`🛡️ Antilink: ${cfg.antilink.toUpperCase()}`});
+    }
+
+    // ====== Media: play/audio/video
+    if (cmd === 'play') {
+      if (!arg) return void sock.sendMessage(chat, { text: 'Ej: .play <nombre de canción>' });
+      try {
+        const r = await yts(arg);
+        const v = r?.videos?.[0];
+        if (!v) return void sock.sendMessage(chat, { text: 'Sin resultados.' });
+
+        const title  = v.title;
+        const author = v.author?.name || '—';
+        const dur    = v.timestamp || (v.duration?.timestamp) || '—';
+        const thumb  = v.image || v.thumbnail || null;
+        const url    = v.url;
+        lastYT.set(chat, url);
+
+        const caption = [`🎵 *${title}*`,`👤 ${author}`,`⏱ ${dur}`,'','Usa: .audio  o  .video'].join('\n');
+        if (thumb) await sock.sendMessage(chat, { image: { url: thumb }, caption });
+        else await sock.sendMessage(chat, { text: caption });
+
+        // prefetch audio
+        try {
+          const out = path.join(TMP, `${Date.now()}-${Math.random().toString(36).slice(2)}.m4a`);
+          const args = ['-f','ba[ext=m4a]/bestaudio','--no-playlist','-o', out, url];
+          const done = new Promise((res, rej) => {
+            const p = spawn(YTDLP, args);
+            let e=''; p.stderr.on('data', d => e+=d);
+            p.on('close', c => c===0 ? res(out) : rej(new Error(e||`yt-dlp ${c}`)));
+            p.on('error', rej);
+          });
+          prefetch.set(chat, { url, path: out, mimetype: 'audio/mp4', done });
+        } catch {}
+      } catch { return void sock.sendMessage(chat, { text: '❌ Error al buscar.' }); }
+      return;
+    }
+
+    if (cmd === 'audio') {
+      const target = arg || lastYT.get(chat);
+      if (!target) return void sock.sendMessage(chat,{ text:'Usa: .audio <url|búsqueda> o primero .play <nombre>' });
+
+      const pf = prefetch.get(chat);
+      if (pf && pf.url === target) {
+        try {
+          const outPath = await pf.done;
+          const buf = await fsp.readFile(outPath).finally(()=>fsp.unlink(outPath).catch(()=>{}));
+          prefetch.delete(chat);
+          return void sock.sendMessage(chat, { audio: buf, mimetype: pf.mimetype });
+        } catch { prefetch.delete(chat); }
+      }
+      try {
+        const { buf, mimetype } = await YT.audioFast(target);
+        return void sock.sendMessage(chat, { audio: buf, mimetype });
+      } catch { return void sock.sendMessage(chat, { text: '❌ Falló al enviar audio.' }); }
+    }
+
+    if (cmd === 'video') {
+      const target = arg || lastYT.get(chat);
+      if (!target) return void sock.sendMessage(chat,{ text:'Usa: .video <url|búsqueda> o primero .play <nombre>' });
+      try {
+        const buf = await YT.video(target);
+        await sock.sendMessage(chat, { video: buf, caption: '🎥' });
+      } catch { await sock.sendMessage(chat, { text: '❌ Falló al enviar video.' }); }
+      return;
+    }
+
+    // ===== Stickers
+    if (cmd==='sticker'||cmd==='s'){
+      const ctx = m.message?.extendedTextMessage?.contextInfo;
+      const repliedImage = ctx?.quotedMessage?.imageMessage;
+      const repliedVideo = ctx?.quotedMessage?.videoMessage;
+      let useMsg = null;
+
+      if (repliedImage || repliedVideo){
+        useMsg = { type: repliedImage ? 'image' : 'video', message: { message: ctx.quotedMessage, key: { remoteJid: chat } } };
+      } else {
+        useMsg = lastMedia.get(chat) || null;
+      }
+      if (!useMsg) return void sock.sendMessage(chat,{text:'Responde una imagen/video con *.s* o envía el media y luego *.s*'});
+
+      try {
+        const kind = useMsg.type === 'image' ? 'image' : 'video';
+        const stream = await downloadContentFromMessage(
+          repliedImage || repliedVideo ? (repliedImage || repliedVideo) : (useMsg.message.message[kind+'Message']),
+          kind
+        );
+        const media = await streamToBuffer(stream);
+        const webp  = kind === 'image' ? await imageToWebpBuf(media) : await videoToWebpBuf(media);
+        return void sock.sendMessage(chat,{sticker:webp});
+      } catch {
+        return void sock.sendMessage(chat,{text:'❌ Falló al crear el sticker.'});
+      }
+    }
+
+    if (cmd==='toimg'){
+      const ctx=m.message?.extendedTextMessage?.contextInfo;
+      const q=ctx?.quotedMessage?.stickerMessage;
+      if(!q) return void sock.sendMessage(chat,{text:'Responde un sticker con .toimg'});
+      const inBuf=await streamToBuffer(await downloadContentFromMessage(q,'sticker'));
+      const inPath=path.join(TMP,`in-${Date.now()}.webp`);
+      const outPath=path.join(TMP,`out-${Date.now()}.png`);
+      await fsp.writeFile(inPath,inBuf);
+      await new Promise((res,rej)=>{const p=spawn(FFMPEG,['-y','-i',inPath,outPath]); p.on('close',c=>c===0?res():rej(new Error('ffmpeg')));});
+      const out=await fsp.readFile(outPath).finally(()=>{fsp.unlink(inPath).catch(()=>{}); fsp.unlink(outPath).catch(()=>{});});
+      return void sock.sendMessage(chat,{image:out});
+    }
+
+    // ===== ADMIN: promote/demote/kick + abrir/cerrar
+    if (['promote','demote','kick'].includes(cmd)) {
+      if (!isGroup) return;
+      const ctx = m.message?.extendedTextMessage?.contextInfo;
+      const target = ctx?.mentionedJid?.[0] || ctx?.participant;
+      if (!target) return void sock.sendMessage(chat,{text:'Etiqueta o responde a quien va dirigido.'});
+      try {
+        if (cmd === 'promote') {
+          await sock.groupParticipantsUpdate(chat, [target], 'promote');
+          const actor  = senderJid; const footer = headerN_valak();
+          const aviso = `𝑈𝑌 𝑁𝑂 ${tagFor(target)}  𝐴𝐻𝑂𝑅𝐴 𝑇𝐼𝐸𝑁𝐸 𝑃𝑂𝐷𝐄𝑅𝐸𝑆.\n\n𝐎𝐓𝐎𝐑𝐆𝐀𝐃𝐎 𝐏𝐎𝐑: ${tagFor(actor)}\n\n${footer}`;
+          return void sock.sendMessage(chat, { text: aviso, mentions: [target, actor] });
+        }
+        if (cmd === 'demote') {
+          await sock.groupParticipantsUpdate(chat, [target], 'demote');
+          const actor  = senderJid; const footer = headerN_valak();
+          const aviso = `𝐸𝐿 𝑃𝑂𝐷𝐄𝑅 𝐿𝐸 𝐹𝑈𝐸 𝑅𝐸𝑇𝐼𝑅𝐴𝐃𝑂 𝐴 ${tagFor(target)}.\n\n𝐸𝑋𝐸𝐶𝑈𝑇𝐴𝐷𝑂 𝐏𝐎𝐑: ${tagFor(actor)}\n\n${footer}`;
+          return void sock.sendMessage(chat, { text: aviso, mentions: [target, actor] });
+        }
+        if (cmd === 'kick') {
+          await sock.groupParticipantsUpdate(chat, [target], 'remove');
+          return void sock.sendMessage(chat, { text: `𝘏𝘢 𝘴𝘪𝘥𝘰 𝘦𝘹𝘱𝘶𝘭𝘴𝘢𝘥@ ${tagFor(target)}.`, mentions:[target] });
+        }
+      } catch {
+        return void sock.sendMessage(chat, {
+          text: 'Necesito ser admin para hacer eso. Ve a *Info del grupo → Participantes → (bot) → Hacer admin*.'
+        });
+      }
+    }
+
+    if (cmd==='grupabrir') {
+      if (!isGroup) return;
+      try {
+        await sock.groupSettingUpdate(chat, 'not_announcement');
+        const actor = senderJid;
+        const aviso = `➤ \`INFORMATIVO\` ❕\n\`\`\`» ${tagFor(actor)}\nHA ABIERTO 🔓 EL GRUPO\nNEW CREW\`\`\``;
+        await sock.sendMessage(chat, { text: aviso, mentions: [actor] });
+        try { await sock.sendMessage(chat, { delete: { ...m.key, fromMe: true } }); } catch {}
+      } catch { return void sock.sendMessage(chat, { text: 'Necesito ser admin para cambiar la configuración.' }); }
+    }
+    if (cmd==='grupcerrar') {
+      if (!isGroup) return;
+      try {
+        await sock.groupSettingUpdate(chat, 'announcement');
+        const actor = senderJid;
+        const aviso = `➤ \`INFORMATIVO\` ❕\n\`\`\`» ${tagFor(actor)}\nHA CERRADO 🔒 EL GRUPO\nNEW CREW\`\`\``;
+        await sock.sendMessage(chat, { text: aviso, mentions: [actor] });
+        try { await sock.sendMessage(chat, { delete: { ...m.key, fromMe: true } }); } catch {}
+      } catch { return void sock.sendMessage(chat, { text: 'Necesito ser admin para cambiar la configuración.' }); }
+    }
+
+    // ===== LISTAS =====
+    const gotHour = parseHourToMXCOL(body);
+
+    // 4vs4 / 6vs6 normal
+    if (cmd==='4vs4' || cmd==='6vs6'){
+      const mode = /fem/i.test(arg) ? 'fem' : /masc/i.test(arg) ? 'masc' : 'mixto';
+      boards.set(chat,{ kind:cmd, mode, players:[], subs:[], msgKey:null, hours:gotHour, isOpen:true, notify:true, capP:(cmd==='4vs4'?4:6), capS:(cmd==='4vs4'?2:3), title:'', nick:new Map(), blocked:new Set() });
+      await sendBoard(sock, chat);
+      return;
+    }
+
+    // *** NUEVO: 6vs6 VV2 ***
+    if (cmd==='6vs6' && /^vv2\b/i.test(arg) || cmd==='6vs6vv2' || cmd==='vv2') {
+      const mode = /fem/i.test(arg) ? 'fem' : /masc/i.test(arg) ? 'masc' : /mixto/i.test(arg) ? 'mixto' : 'mixto';
+      boards.set(chat,{ kind:'6vv2', mode, players:[], subs:[], msgKey:null, hours:gotHour, isOpen:true, notify:true, capP:6, capS:3, title:'', nick:new Map(), blocked:new Set() });
+      await sendBoard(sock, chat);
+      return;
+    }
+
+    // MULTI-ESCUADRAS (8v8 / 12v12 / 16v16 / hexagonal / trilatero / cuadrilatero)
+    const makeMulti = (title, squadsCount, squadSize) => {
+      boards.set(chat,{
+        kind:'multi', title, squadsCount, squadSize,
+        squads: Array.from({length:squadsCount},()=>[]),
+        subs:[], hours:gotHour, msgKey:null, isOpen:true, notify:true, nick:new Map(), blocked:new Set()
+      });
+    };
+
+    if (cmd==='8vs8'){ makeMulti('8 VERSUS 8', 2, 4); await sendBoard(sock, chat); return; }
+    if (cmd==='12vs12'){ makeMulti('12 VERSUS 12', 3, 4); await sendBoard(sock, chat); return; }
+    if (cmd==='16vs16'){ makeMulti('16 VERSUS 16', 4, 4); await sendBoard(sock, chat); return; }
+    if (cmd==='hexagonal'){ makeMulti('HEXAGONAL', 2, 4); await sendBoard(sock, chat); return; }
+    if (cmd==='trilatero' || cmd==='trilátero'){ makeMulti('TRILÁTERO', 4, 4); await sendBoard(sock, chat); return; }
+    if (cmd==='cuadrilatero' || cmd==='cuadrilátero'){ makeMulti('CUADRILÁTERO', 3, 4); await sendBoard(sock, chat); return; }
+
+    // CONTROLES de la lista activa
+    const b=boards.get(chat);
+    if (cmd==='limpiar'||cmd==='reiniciar'){
+      if(!b) return void sock.sendMessage(chat,{text:'No hay lista activa.'});
+      if (b.kind==='multi'){ b.squads = b.squads.map(()=>[]); b.subs=[]; }
+      else { b.players=[]; b.subs=[]; }
+      await sendBoard(sock, chat); return;
+    }
+    if (cmd==='abrir'){ if(!b) return; b.isOpen=true; await sock.sendMessage(chat,{text:'🔓 Lista abierta.'}); return; }
+    if (cmd==='cerrar'){ if(!b) return; b.isOpen=false; await sock.sendMessage(chat,{text:'🔒 Lista cerrada.'}); return; }
+    if (cmd==='sethora'){ if(!b) return; b.hours=parseHourToMXCOL(arg); await sendBoard(sock, chat); return; }
+    if (cmd==='modo'){
+      if(!b) return;
+      const s=arg.toLowerCase();
+      const mm = s.includes('fem')?'fem' : s.includes('masc')?'masc' : 'mixto';
+      b.mode = mm;
+      await sendBoard(sock, chat); return;
+    }
+    if (cmd==='titulo'){ if(!b) return; b.title = arg||b.title; await sendBoard(sock, chat); return; }
+    if (cmd==='ver'){ if(!b) return; await sendBoard(sock,chat); return; }
+    if (cmd==='locksubs'){ if(!b) return; b.lockSubs = /on|1|true/i.test(arg); await sock.sendMessage(chat,{text:`⛔ locksubs: ${b.lockSubs?'ON':'OFF'}`}); return; }
+    if (cmd==='notif'){ if(!b) return; b.notify = /on|1|true/i.test(arg); await sock.sendMessage(chat,{text:`🔔 notif: ${b.notify?'ON':'OFF'}`}); return; }
+
+    // add/rm/rename/swap/mover (compat básicos, funcionan en multi para suplentes y última escuadra si hace falta)
+    if (cmd==='add'){
+      if(!b) return;
+      const ctx=m.message?.extendedTextMessage?.contextInfo;
+      const j=ctx?.mentionedJid?.[0];
+      if(!j) return void sock.sendMessage(chat,{text:'Usa: .add @user'});
+      if (b.kind==='multi'){
+        // mete en la 1ª escuadra con hueco, si no, a suplentes
+        for (let i=0;i<b.squadsCount;i++){
+          if (b.squads[i].length < b.squadSize){ b.squads[i].push(j); await sendBoard(sock,chat); return; }
+        }
+        b.subs.push(j); await sendBoard(sock,chat); return;
+      } else {
+        const role=arg.toLowerCase().includes('sub')?'sub':'jug';
+        if(role==='sub'){
+          if (!b.subs.includes(j) && b.subs.length < (b.capS|| (b.kind==='4vs4'?2:3))) b.subs.push(j);
+        } else {
+          if (!b.players.includes(j) && b.players.length < (b.capP|| (b.kind==='4vs4'?4:6))) b.players.push(j);
+        }
+        await sendBoard(sock,chat); return;
+      }
+    }
+    if (cmd==='rm'){
+      if(!b) return;
+      const ctx=m.message?.extendedTextMessage?.contextInfo;
+      const j=ctx?.mentionedJid?.[0];
+      if(!j) return;
+      if (b.kind==='multi'){
+        b.squads = b.squads.map(arr=>arr.filter(x=>!same(x,j)));
+        b.subs = (b.subs||[]).filter(x=>!same(x,j));
+      } else {
+        b.players=b.players.filter(x=>!same(x,j));
+        b.subs=b.subs.filter(x=>!same(x,j));
+      }
+      await sendBoard(sock,chat); return;
+    }
+    if (cmd==='rename'){
+      if(!b) return;
+      const ctx=m.message?.extendedTextMessage?.contextInfo;
+      const j=ctx?.mentionedJid?.[0];
+      const nick=arg.replace(/@\d+/,'').trim();
+      if(!j||!nick) return void sock.sendMessage(chat,{text:'Usa: .rename @user <apodo>'});
+      b.nick=b.nick||new Map(); b.nick.set(j, nick);
+      await sendBoard(sock,chat); return;
+    }
+
+    // ===== MENCIONES/JUEGOS/INFO/MODERACIÓN (igual que antes, abreviados)
+    if (cmd==='todos'){
+      if (!isGroup) return;
+      const meta = await sock.groupMetadata(chat);
+      const jids = meta?.participants?.map(p => p.id) || [];
+      const lines = jids.map(j => `• @${j.split('@')[0]}`).join('\n');
+      const text = `*INVOCANDO A TODOS*\n\n*Etiquetas*\n${lines}\n\n${headerN_valak()}`;
+      return void sock.sendMessage(chat, { text, mentions: jids });
+    }
+
+    // … (aquí puedes mantener el resto de juegos/top/ruletaban/warns/mute/etc tal como ya los tenías)
+  });
+}
+
+start();
